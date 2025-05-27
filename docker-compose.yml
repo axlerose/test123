@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: choir_postgres
+    environment:
+      POSTGRES_USER: choiradmin
+      POSTGRES_PASSWORD: choirpass # Replace with a strong password in production/real setup
+      POSTGRES_DB: choirdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - choir_network
+    restart: unless-stopped
+
+  keycloak_db: # Separate DB instance for Keycloak data, as per best practice
+    image: postgres:15-alpine
+    container_name: choir_keycloak_db
+    environment:
+      POSTGRES_USER: keycloakuser
+      POSTGRES_PASSWORD: keycloakpass # Replace with a strong password
+      POSTGRES_DB: keycloakdb
+    volumes:
+      - keycloak_postgres_data:/var/lib/postgresql/data
+    ports: # Optional: map to a different host port if you need to access it directly, e.g., "5433:5432"
+      - "5431:5432" 
+    networks:
+      - choir_network
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.5 # Use a specific recent version
+    container_name: choir_keycloak
+    command: start-dev # For development mode
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin # Replace with a strong password
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak_db # Service name of Keycloak's PostgreSQL container
+      KC_DB_URL_PORT: 5432 
+      KC_DB_URL_DATABASE: keycloakdb
+      KC_DB_USERNAME: keycloakuser
+      KC_DB_PASSWORD: keycloakpass
+      KC_DB_SCHEMA: public # Default schema
+      KC_HOSTNAME_STRICT: "false" # Allows access via various hostnames (dev convenience)
+      KC_HTTP_ENABLED: "true" 
+      KC_HTTP_PORT: 8180 # Internal Keycloak HTTP port
+      KC_PROXY: "edge" # Recommended if potentially behind a reverse proxy or for flexible hostname
+      # Remove KC_HTTPS_PORT unless you're setting up HTTPS for Keycloak within Docker, which is more complex.
+      # For development, HTTP is usually sufficient for Keycloak itself.
+    ports:
+      - "8180:8180" # Map Keycloak's HTTP port (8180) to host port 8180
+    depends_on:
+      - keycloak_db
+    networks:
+      - choir_network
+    restart: unless-stopped
+    # Optional: Mount a volume for custom themes or extensions if needed
+    # volumes:
+    #   - ./keycloak_themes:/opt/keycloak/themes
+
+  backend:
+    build:
+      context: ./my-spring-project
+      dockerfile: Dockerfile
+    container_name: choir_backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/choirdb
+      SPRING_DATASOURCE_USERNAME: choiradmin
+      SPRING_DATASOURCE_PASSWORD: choirpass
+      # IMPORTANT: User must replace YOUR_REALM_NAME after setting up Keycloak.
+      # localhost:8180 should work from host. From container-to-container, keycloak:8180 is better.
+      # Using host.docker.internal or a fixed IP might be needed if backend can't resolve keycloak service name
+      # or if Keycloak is accessed via host's localhost.
+      # For backend -> keycloak communication within Docker network:
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8180/realms/YOUR_REALM_NAME 
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update # Or "validate" for prod, "create-drop" for fresh DB on start
+      # JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005" # For remote debugging
+    ports:
+      - "8080:8080" # Backend app port
+      # - "5005:50005" # For remote debugging
+    depends_on:
+      - postgres
+      - keycloak # Backend should wait for Keycloak to be somewhat available
+    networks:
+      - choir_network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./ChoirManagementApp
+      dockerfile: Dockerfile
+    container_name: choir_frontend_metro
+    ports:
+      - "8081:8081" # Metro Bundler
+      # Expo GO related ports - useful if developing with Expo Go
+      - "19000:19000"
+      - "19001:19001"
+      - "19002:19002"
+    volumes:
+      # Mount source code for live reloading during development
+      - ./ChoirManagementApp:/usr/src/app 
+      # Anonymous volume for node_modules to prevent host's node_modules from overriding the container's
+      # This is important if node_modules are installed differently in the container vs host.
+      - /usr/src/app/node_modules 
+    networks:
+      - choir_network
+    # No depends_on needed typically, as Metro can start independently.
+    # It will connect to backend API once app runs on device/emulator.
+    restart: unless-stopped
+    # Add stdin_open and tty for interactive Metro CLI if needed, though CMD yarn start usually doesn't require it.
+    # stdin_open: true
+    # tty: true
+
+volumes:
+  postgres_data:
+  keycloak_postgres_data: # Volume for Keycloak's database
+  # keycloak_data: # If you had /opt/keycloak/data mounted for Keycloak itself
+
+networks:
+  choir_network:
+    driver: bridge

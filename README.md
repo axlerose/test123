@@ -286,3 +286,113 @@ npm test
 yarn test
 ```
 This will run Jest tests. You can also run `yarn tsc` or `npm run tsc` to perform a TypeScript type check.
+
+## Running with Docker
+
+This project can be run using Docker and Docker Compose for a streamlined development and testing environment. This setup includes the backend API, PostgreSQL databases for the application and Keycloak, Keycloak itself, and the React Native Metro bundler.
+
+### Prerequisites
+
+*   [Docker](https://docs.docker.com/get-docker/) installed and running.
+*   [Docker Compose](https://docs.docker.com/compose/install/) installed.
+
+### Initial Setup & Configuration
+
+Before launching the Docker stack, some configuration is necessary:
+
+1.  **Passwords (Important!):**
+    *   Open `docker-compose.yml`.
+    *   Change the placeholder passwords for `POSTGRES_PASSWORD` (for both `postgres` and `keycloak_db` services) and `KEYCLOAK_ADMIN_PASSWORD` (for the `keycloak` service) to strong, unique passwords.
+
+2.  **Keycloak Setup (Manual - First Time):**
+    *   Once Keycloak is running (after `docker-compose up`), you'll need to access its admin console (typically `http://localhost:8180`) using the admin credentials you set in `docker-compose.yml`.
+    *   Create a new realm (e.g., `choir_realm` or any name you prefer).
+    *   **Backend Client:** Inside your realm, create a Keycloak client for the backend service.
+        *   **Client ID:** e.g., `choir-backend-service`
+        *   **Client Protocol:** `openid-connect`
+        *   **Access Type:** `bearer-only` (or `confidential` if using client secret)
+    *   **Frontend Client:** Inside your realm, create another Keycloak client for the React Native frontend.
+        *   **Client ID:** e.g., `choir-frontend-app`
+        *   **Client Protocol:** `openid-connect`
+        *   **Access Type:** `public`
+        *   **Valid Redirect URIs:** Add `choirapp://callback` and `choirapp://logout` (and any other schemes/hosts you might use for development, like Expo Go specific ones).
+        *   **Web Origins:** Add `*` or specific origins if needed for CORS from browser-based interactions (though for React Native, deep linking is key).
+    *   **Roles:** Create an `ADMIN` realm role if you haven't already (as per backend setup). Assign this role to your admin user(s).
+
+3.  **Update Configuration Files:**
+    *   **`docker-compose.yml` (for Backend Service):**
+        *   In the `environment` section of the `backend` service, update `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI`. Replace `YOUR_REALM_NAME` with the actual name of the realm you created in Keycloak. It should look like: `http://keycloak:8180/realms/your_choir_realm_name`. (The `keycloak:8180` part uses Docker's internal network to allow the backend container to find the Keycloak container).
+    *   **`ChoirManagementApp/src/config/appConfig.ts` (for React Native Frontend):**
+        *   Update the `keycloakConfig`:
+            *   `authority`: Set to `http://localhost:8180/realms/your_choir_realm_name` (assuming you access Keycloak from your host machine/emulator via `localhost:8180`. If your emulator/device uses a different IP to access the host, adjust accordingly).
+            *   `client_id`: Set to the Client ID you configured for the frontend app in Keycloak (e.g., `choir-frontend-app`).
+        *   Update `API_BASE_URL`:
+            *   If running an Android emulator, this is typically `http://10.0.2.2:8080/api` (as `10.0.2.2` is the emulator's alias for your host machine's localhost).
+            *   If running on a physical device or an emulator that uses your host's network IP, use `http://<your_host_ip>:8080/api`.
+            *   If testing on an iOS simulator, `http://localhost:8080/api` should work directly.
+
+### Running the Application Stack
+
+1.  **Build and Start Services:**
+    Open a terminal in the root directory of the project (where `docker-compose.yml` is located) and run:
+    ```bash
+    docker-compose up --build -d
+    ```
+    *   `--build`: Forces Docker Compose to build the images from your Dockerfiles (e.g., for `backend` and `frontend`) before starting the services.
+    *   `-d`: Runs the services in detached mode (in the background).
+
+2.  **View Logs:**
+    To view logs from all services:
+    ```bash
+    docker-compose logs -f
+    ```
+    To view logs for a specific service (e.g., `backend`):
+    ```bash
+    docker-compose logs -f backend
+    ```
+
+3.  **Stopping the Stack:**
+    To stop all running services:
+    ```bash
+    docker-compose down
+    ```
+    Add `-v` if you also want to remove the named volumes (PostgreSQL data, Keycloak data - **use with caution as this deletes data**):
+    ```bash
+    docker-compose down -v
+    ```
+
+### Accessing Services
+
+Once the stack is running:
+
+*   **PostgreSQL (Application Database):** Accessible on `localhost:5432` (or your mapped port).
+*   **PostgreSQL (Keycloak Database):** Accessible on `localhost:5431` (or your mapped port).
+*   **Keycloak Admin Console:** `http://localhost:8180` (use the admin credentials set in `docker-compose.yml`).
+*   **Backend API:** `http://localhost:8080`
+*   **Backend API Documentation (Swagger UI):** `http://localhost:8080/swagger-ui.html`
+*   **Frontend Metro Bundler:** `http://localhost:8081` (and other Expo-related ports like 19000, 19001, 19002).
+
+### Connecting the React Native App (Emulator/Device)
+
+Your React Native application (running on an emulator or physical device) needs to connect to the services running in Docker:
+
+1.  **Metro Bundler:**
+    *   Ensure your device/emulator is on the same network as your host machine if using a physical device.
+    *   The Metro bundler runs on `localhost:8081` *on your host machine*.
+    *   **Android Emulator (standard):** Typically, you can access your host's `localhost` via the IP `10.0.2.2` from within the emulator. So, the bundler might be accessible at `10.0.2.2:8081`.
+    *   **iOS Simulator:** `localhost:8081` should work directly.
+    *   **Physical Device / Other Emulators:** You'll need to use your host machine's actual IP address on your local network (e.g., `192.168.1.100:8081`). You might need to configure the React Native development settings in your app to point to this IP if it doesn't discover it automatically.
+    *   The `frontend` service in `docker-compose.yml` maps port 8081, so it's accessible from the host.
+
+2.  **Backend API & Keycloak:**
+    *   As configured in `ChoirManagementApp/src/config/appConfig.ts`:
+        *   `API_BASE_URL` should point to your backend (e.g., `http://10.0.2.2:8080/api` for Android emulator, or `http://<your_host_ip>:8080/api` for physical devices).
+        *   `keycloakConfig.authority` should point to your Keycloak instance (e.g., `http://10.0.2.2:8180/realms/your_realm_name` or `http://<your_host_ip>:8180/realms/your_realm_name`).
+
+3.  **Deep Linking for Keycloak:**
+    *   **Crucial:** Ensure you have correctly configured native deep linking for the scheme `choirapp://` (or whatever you set in `appConfig.ts` and Keycloak client settings) in your Android (`AndroidManifest.xml`) and iOS (`Info.plist` / AppDelegate) projects. This is essential for Keycloak to redirect back to your app after login/logout. Refer to React Navigation and Keycloak documentation for platform-specific deep linking setup.
+
+### Data Persistence
+
+*   PostgreSQL data for both the application and Keycloak is persisted in Docker named volumes (`postgres_data` and `keycloak_postgres_data`). This means your data will remain even if you stop and restart the containers with `docker-compose down` and `docker-compose up`.
+*   To clear all data, you would use `docker-compose down -v`.
